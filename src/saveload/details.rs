@@ -42,13 +42,13 @@ pub trait SaveLoadComponent<M>: Component {
 
 impl<C, M> SaveLoadComponent<M> for C
 where
-    C: Component + DeserializeOwned + Serialize + Copy,
+    C: Component + DeserializeOwned + Serialize + Clone,
 {
     type Data = Self;
     type Error = NoError;
 
     fn save<F>(&self, _ids: F) -> Result<Self::Data, NoError> {
-        Ok(*self)
+        Ok(self.clone())
     }
 
     fn load<F>(data: Self, _ids: F) -> Result<Self, NoError> {
