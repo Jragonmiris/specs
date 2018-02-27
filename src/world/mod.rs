@@ -11,94 +11,13 @@ use shred::{Fetch, FetchMut, Resource, Resources};
 
 use error::WrongGeneration;
 use storage::{AnyStorage, DenseVecStorage, MaskedStorage};
-use storage::{ReadStorage, Storage, WriteStorage};
+use storage::{ReadStorage, WriteStorage};
 
 mod comp;
 mod entity;
 mod lazy;
 #[cfg(test)]
 mod tests;
-
-#[cfg(not(feature = "nightly"))]
-fn component_message<T>(id: usize) -> String {
-    let (message, function) = if id == 0 {
-        (
-            "Unregistered component".to_string(),
-            "World::register::<ComponentName>()".to_string(),
-        )
-    } else {
-        (
-            format!("Unregistered component with id `{}`", id),
-            format!("World::register_with_id::<ComponentName>({})", id),
-        )
-    };
-    format!(
-        "{}. Did you forget to register \
-         the component with `{}`? \
-         Note: Enable `nightly` feature to get the exact component \
-         type printed out.",
-        message, function,
-    )
-}
-
-#[cfg(feature = "nightly")]
-fn component_message<T>(id: usize) -> String {
-    let type_name = unsafe { ::std::intrinsics::type_name::<T>() };
-    let (message, function) = if id == 0 {
-        (
-            format!("Component `{}` was unregistered", type_name),
-            format!("World::register::<{}>()", type_name),
-        )
-    } else {
-        (
-            format!(
-                "Component `{}` with id `{}` was unregistered.",
-                type_name, id
-            ),
-            format!("World::register_with_id::<{}>({})", type_name, id),
-        )
-    };
-
-    format!(
-        "{}. Did you forget to register the component with `{}`",
-        message, function
-    )
-}
-
-#[cfg(not(feature = "nightly"))]
-fn resource_message<T>(id: usize) -> String {
-    format!(
-        "No resource with the id `{}`. Did you forget to add \
-        the resource with `World::add_resource(resource)`?
-        Note: Enable `nightly` feature to get the exact resource \
-        type printed out.",
-        id,
-    )
-}
-
-#[cfg(feature = "nightly")]
-fn resource_message<T>(id: usize) -> String {
-    let type_name = unsafe { ::std::intrinsics::type_name::<T>() };
-    let (message, function) = if id == 0 {
-        (
-            format!("No resource `{}` exists in the world", type_name),
-            format!("World::add_resource::<{}>(...)", type_name),
-        )
-    } else {
-        (
-            format!(
-                "No resource `{}` with id `{}` exists in the world",
-                type_name, id
-            ),
-            format!("World::add_resource_with_id::<{}>(..., {})", type_name, id),
-        )
-    };
-
-    format!(
-        "{}. Did you forget to add the resource with `{}`",
-        message, function
-    )
-}
 
 /// An iterator for entity creation.
 /// Please note that you have to consume
@@ -157,7 +76,7 @@ pub struct EntityBuilder<'a> {
 }
 
 impl<'a> EntityBuilder<'a> {
-    /// Appends a component with the default component id.
+    /// Appends a component and associates it with the entity.
     ///
     /// # Panics
     ///
@@ -165,19 +84,8 @@ impl<'a> EntityBuilder<'a> {
     /// `World`.
     #[inline]
     pub fn with<T: Component>(self, c: T) -> Self {
-        self.with_id(c, 0)
-    }
-
-    /// Appends a component with a component id.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the component hasn't been `register_with_id()`ed in the
-    /// `World`.
-    #[inline]
-    pub fn with_id<T: Component>(self, c: T, id: usize) -> Self {
         {
-            let mut storage = self.world.write_with_id(id);
+            let mut storage = self.world.write();
             storage.insert(self.entity, c);
         }
 
@@ -198,17 +106,6 @@ impl<'a> EntityBuilder<'a> {
 /// is stored with **interior mutability**. In case you violate
 /// the borrowing rules of Rust (multiple reads xor one write),
 /// you will get a panic.
-///
-/// ## Component / Resources ids
-///
-/// Components and resources may, in addition to their type, be identified
-/// by an id of type `usize`. The convenience methods dealing
-/// with components assume that it's `0`.
-///
-/// If a system attempts to access a component/resource that has not been
-/// registered/added, it will panic when run. Add all components with
-/// `World::register` before running any systems. Also add all resources
-/// with `World::add_resource`.
 ///
 /// ## Examples
 ///
@@ -281,10 +178,9 @@ impl World {
         Default::default()
     }
 
-    /// Registers a new component.
+    /// Registers a new component, adding the component storage.
     ///
-    /// Calls `register_with_id` with id `0`, which
-    /// is the default for component ids.
+    /// Calls `register_with_storage` with `Default::default()`.
     ///
     /// Does nothing if the component was already
     /// registered.
@@ -311,48 +207,18 @@ impl World {
     where
         T::Storage: Default,
     {
-        self.register_with_id::<T>(0);
-    }
-
-    /// Registers a new component with a given id.
-    ///
-    /// Does nothing if the component was already
-    /// registered.
-    pub fn register_with_id<T: Component>(&mut self, id: usize)
-    where
-        T::Storage: Default,
-    {
-        self.register_with_storage_and_id::<T>(id, T::Storage::default());
+        self.register_with_storage::<T>(Default::default());
     }
 
     /// Registers a new component with a given storage.
     ///
-    /// Does nothing if the component was already
-    /// registered.
+    /// Does nothing if the component was already registered.
     pub fn register_with_storage<T: Component>(&mut self, storage: T::Storage) {
-        self.register_with_storage_and_id::<T>(0, storage);
+        let mut storage = self.res.entry().or_insert_with(|| MaskedStorage::<T>::new(storage));
+        self.storages.push(&mut *storage as &mut AnyStorage as *mut AnyStorage);
     }
 
-    /// Registers a new component with a given storage and id.
-    ///
-    /// Does nothing if the component was already
-    /// registered.
-    pub fn register_with_storage_and_id<T: Component>(&mut self, id: usize, storage: T::Storage) {
-        use shred::ResourceId;
-
-        if self.res
-            .has_value(ResourceId::new_with_id::<MaskedStorage<T>>(id))
-        {
-            return;
-        }
-
-        self.res.add_with_id(MaskedStorage::<T>::new(storage), id);
-
-        let mut storage = self.res.fetch_mut::<MaskedStorage<T>>(id);
-        self.storages.push(&mut *storage as *mut AnyStorage);
-    }
-
-    /// Adds a resource with the default ID (`0`).
+    /// Adds a resource to the world.
     ///
     /// If the resource already exists it will be overwritten.
     ///
@@ -387,130 +253,57 @@ impl World {
     /// world.add_resource(server_con);
     /// ```
     pub fn add_resource<T: Resource>(&mut self, res: T) {
-        self.add_resource_with_id(res, 0);
-    }
-
-    /// Adds a resource with a given ID.
-    ///
-    /// If the resource already exists it will be overwritten.
-    pub fn add_resource_with_id<T: Resource>(&mut self, res: T, id: usize) {
         use shred::ResourceId;
 
-        if self.res.has_value(ResourceId::new_with_id::<T>(id)) {
-            *self.write_resource_with_id(id) = res;
+        if self.res.has_value(ResourceId::new::<T>()) {
+            *self.res.fetch_mut() = res;
         } else {
-            self.res.add_with_id(res, id);
+            self.res.add(res);
         }
     }
 
     /// Fetches a component's storage with the default id for reading.
-    ///
-    /// Convenience method for `read_with_id`, using the default component
-    /// id (`0`).
     ///
     /// ## Panics
     ///
     /// Panics if it is already borrowed mutably.
     /// Panics if the component has not been registered.
     pub fn read<T: Component>(&self) -> ReadStorage<T> {
-        self.read_with_id(0)
+        use shred::SystemData;
+
+        SystemData::fetch(&self.res)
     }
 
     /// Fetches a component's storage with the default id for writing.
-    ///
-    /// Convenience method for `write_with_id`, using the default component
-    /// id (`0`).
     ///
     /// ## Panics
     ///
     /// Panics if it is already borrowed (either immutably or mutably).
     /// Panics if the component has not been registered.
     pub fn write<T: Component>(&self) -> WriteStorage<T> {
-        self.write_with_id(0)
+        use shred::SystemData;
+
+        SystemData::fetch(&self.res)
     }
 
-    /// Fetches a component's storage with a specified component id for reading.
-    /// ID is for components registered with an ID, and does not correspond to
-    /// entity IDs. For basic setups, use an ID of 0 or use the read() function.
-    ///
-    /// ## Panics
-    ///
-    /// Panics if it is already borrowed mutably.
-    /// Also panics if the component is not registered with `World::register`.
-    pub fn read_with_id<T: Component>(&self, id: usize) -> ReadStorage<T> {
-        let entities = self.entities();
-        let resource = self.res.try_fetch::<MaskedStorage<T>>(id);
-
-        Storage::new(entities, resource.expect(&component_message::<T>(id)))
-    }
-
-    /// Fetches a component's storage with a specified id for writing.
-    /// ID is for components registered with an ID, and does not correspond to
-    /// entity IDs. For basic setups, use an ID of 0 or use the write() function.
-    ///
-    /// # Panics
-    ///
-    /// Panics if it is already borrowed (either immutably or mutably).
-    /// Also panics if the component is not registered with `World::register`.
-    pub fn write_with_id<T: Component>(&self, id: usize) -> WriteStorage<T> {
-        let entities = self.entities();
-        let resource = self.res.try_fetch_mut::<MaskedStorage<T>>(id);
-
-        Storage::new(entities, resource.expect(&component_message::<T>(id)))
-    }
-
-    /// Fetches a resource with a specified id for reading.
-    /// ID is for resources registered with an ID, and does not correspond to
-    /// entity IDs. For basic setups, use an ID of 0 or use the read_resource()
-    /// function.
-    ///
-    /// ## Panics
-    ///
-    /// Panics if it is already borrowed mutably.
-    /// Panics if the resource has not been added.
-    pub fn read_resource_with_id<T: Resource>(&self, id: usize) -> Fetch<T> {
-        self.res.try_fetch(id).expect(&resource_message::<T>(id))
-    }
-
-    /// Fetches a resource with a specified id for writing.
-    /// ID is for resources registered with an ID, and does not correspond to
-    /// entity IDs. For basic setups, use an ID of 0 or use the write_resource()
-    /// function.
-    ///
-    /// ## Panics
-    ///
-    /// Panics if it is already borrowed.
-    /// Panics if the resource has not been added.
-    pub fn write_resource_with_id<T: Resource>(&self, id: usize) -> FetchMut<T> {
-        self.res
-            .try_fetch_mut(id)
-            .expect(&resource_message::<T>(id))
-    }
-
-    /// Fetches a resource with the default id for reading.
-    ///
-    /// Convenience method for `read_resource_with_id`, using the default component
-    /// id (`0`).
+    /// Fetches a resource for reading.
     ///
     /// ## Panics
     ///
     /// Panics if it is already borrowed mutably.
     /// Panics if the resource has not been added.
     pub fn read_resource<T: Resource>(&self) -> Fetch<T> {
-        self.read_resource_with_id(0)
+        self.res.fetch()
     }
 
-    /// Fetches a resource with the default id for writing.
-    ///
-    /// Convenience method for `write_resource_with_id`, using the default component
-    /// id (`0`).
+    /// Fetches a resource for writing.
     ///
     /// # Panics
     ///
     /// Panics if it is already borrowed.
     /// Panics if the resource has not been added.
     pub fn write_resource<T: Resource>(&self) -> FetchMut<T> {
-        self.write_resource_with_id(0)
+        self.res.fetch_mut()
     }
 
     /// Convenience method for fetching entities.

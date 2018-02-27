@@ -35,6 +35,8 @@ Unlike most other ECS libraries out there, it provides
       other and you can use barriers to force several stages in system execution
 * high performance for real-world applications
 
+Minimum Rust version: 1.21
+
 ## [Link to the book][book]
 
 [book]: https://slide-rs.github.io/specs/
@@ -99,7 +101,7 @@ fn main() {
     // logical dependencies on other systems.
     // Since we only have one, we don't depend on anything.
     // See the `full` example for dependencies.
-    let mut dispatcher = DispatcherBuilder::new().add(SysA, "sys_a", &[]).build();
+    let mut dispatcher = DispatcherBuilder::new().with(SysA, "sys_a", &[]).build();
 
     // This dispatches all the systems in parallel (but blocking).
     dispatcher.dispatch(&mut world.res);
