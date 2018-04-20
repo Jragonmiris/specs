@@ -1,5 +1,7 @@
 use crossbeam::sync::TreiberStack;
 
+#[cfg(feature = "serde")]
+use saveload::Marker;
 use world::{Component, EntitiesRes, Entity, World};
 
 /// Like `EntityBuilder`, but inserts the component
@@ -43,6 +45,23 @@ impl<'a> LazyBuilder<'a> {
     /// entity until you call `World::maintain`.
     pub fn build(self) -> Entity {
         self.entity
+    }
+
+    /// Mark an entity for serialization
+    #[cfg(feature = "serde")]
+    pub fn marked<M>(self) -> Self
+    where
+        M: Marker,
+    {
+        let entity = self.entity;
+        self.lazy.execute(move |world| {
+            use saveload::MarkerAllocator;
+
+            let mut alloc = world.write_resource::<M::Allocator>();
+            alloc.mark(entity, &mut world.write::<M>());
+        });
+
+        self
     }
 }
 
