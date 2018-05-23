@@ -168,5 +168,6 @@ impl_components!(
     WA | WB,
     XA | XB,
     YA | YB,
-    ZA | ZB
+    ZA | ZB,
+    AC | AD
 );
