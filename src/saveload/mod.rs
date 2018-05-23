@@ -32,7 +32,7 @@ mod details;
 mod marker;
 mod ser;
 
-use self::details::{Components, EntityData, Storages};
+pub use self::details::{Components, EntityData, Storages};
 
 pub use self::de::{deserialize, WorldDeserialize};
 pub use self::details::SaveLoadComponent;
